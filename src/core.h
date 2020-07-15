@@ -66,7 +66,13 @@ typedef enum {
 typedef struct {
 	struct in_addr in_addr, netmask;
 	unsigned short port;
-} localaddr_arg;
+} localaddr_arg_v4;
+
+typedef struct {
+	struct in6_addr in_addr;
+	unsigned short prefix;
+	unsigned short port;
+} localaddr_arg_v6;
 
 typedef struct {
 	ip_type ip;
