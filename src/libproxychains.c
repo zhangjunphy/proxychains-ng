@@ -70,10 +70,8 @@ int proxychains_got_chain_data = 0;
 unsigned int proxychains_max_chain = 1;
 int proxychains_quiet_mode = 0;
 int proxychains_resolver = 0;
-localaddr_arg_v4 localnet_addr_v4[MAX_LOCALNET];
-localaddr_arg_v6 localnet_addr_v6[MAX_LOCALNET];
-size_t num_localnet_addr_v4 = 0;
-size_t num_localnet_addr_v6 = 0;
+localaddr_arg localnet_addr[MAX_LOCALNET];
+size_t num_localnet_addr = 0;
 unsigned int remote_dns_subnet = 224;
 
 pthread_once_t init_once = PTHREAD_ONCE_INIT;
@@ -263,12 +261,7 @@ static const char* bool_str(int bool_val) {
 	return "false";
 }
 
-/* test for an ipv6 address by checking for the '.' character */
-static int is_ipv6(char* val) {
-	return strchr(val, '.') == NULL;
-}
-
-static int parse_ipv4_addr(char *localnet_spec, localaddr_arg_v4 *localaddr) {
+static int parse_ipv4_addr(char *localnet_spec, localaddr_arg *localaddr) {
 	char local_in_addr_port[32];
 	char local_in_addr[32], local_in_port[32], local_netmask[32];
 	if (sscanf(localnet_spec, "%21[^/]/%15s", local_in_addr_port, local_netmask) < 2) {
@@ -283,17 +276,21 @@ static int parse_ipv4_addr(char *localnet_spec, localaddr_arg_v4 *localaddr) {
 		PDEBUG("added localnet: netaddr=%s, port=%s, netmask=%s\n", local_in_addr, local_in_port, local_netmask);
 		localaddr->port = (short)atoi(local_in_port);
 	}
+
 	int error;
-	error = inet_pton(AF_INET, local_in_addr, &localaddr->in_addr);
+	error = inet_pton(AF_INET, local_in_addr, &localaddr->ip.addr);
 	if (error <= 0) {
 		fprintf(stderr, "localnet address error\n");
 		return -1;
 	}
-	error = inet_pton(AF_INET, local_netmask, &localaddr->netmask);
+	localaddr->ip.is_v6 = 0;
+
+	error = inet_pton(AF_INET, local_netmask, &localaddr->netmask.addr);
 	if (error <= 0) {
 		fprintf(stderr, "localnet netmask error\n");
 		return -1;
 	}
+	localaddr->netmask.is_v6 = 0;
 
 	return 0;
 }
@@ -302,7 +299,7 @@ static int parse_ipv4_addr(char *localnet_spec, localaddr_arg_v4 *localaddr) {
  * Parse an ipv6 subnet in the format of 2001:db8:a::/64.
  * A port number can be specified as [2001:db8:a::]:8080/64.
  */
-static int parse_ipv6_addr(char *localnet_spec, localaddr_arg_v6 *localaddr) {
+static int parse_ipv6_addr(char *localnet_spec, localaddr_arg *localaddr) {
 	char local_in_addr_port[64];
 	char local_in_addr[64], local_in_port[32];
 	unsigned int local_in_prefix;
@@ -310,9 +307,7 @@ static int parse_ipv6_addr(char *localnet_spec, localaddr_arg_v6 *localaddr) {
 		fprintf(stderr, "localnet format error");
 		return -1;
 	}
-	localaddr->prefix = local_in_prefix;
 
-	fprintf(stderr, "%s\n", local_in_addr_port);
 	if (sscanf(local_in_addr_port, "[%39s]:%5s", local_in_addr, local_in_port) == 2) {
 		PDEBUG("added localnet: netaddr=%s, port=%s, prefix=%d\n", local_in_addr, local_in_port, local_in_prefix);
 		localaddr->port = (short)atoi(local_in_port);
@@ -320,12 +315,26 @@ static int parse_ipv6_addr(char *localnet_spec, localaddr_arg_v6 *localaddr) {
 		PDEBUG("added localnet: netaddr=%s, prefix=%d\n", local_in_addr, local_in_prefix);
 		localaddr->port = 0;
 	}
+
 	int error;
-	error = inet_pton(AF_INET6, local_in_addr, &localaddr->in_addr);
+	error = inet_pton(AF_INET6, local_in_addr, &localaddr->ip.addr);
 	if (error <= 0) {
 		fprintf(stderr, "localnet address error\n");
 		return -1;
 	}
+	localaddr->ip.is_v6 = 1;
+
+	if (local_in_prefix > 128) {
+		fprintf(stderr, "invalid ipv6 prefix: %d\n", local_in_prefix);
+		return -1;
+	}
+
+	int i;
+	memset(localaddr->netmask.addr.v6, 0, sizeof(localaddr->netmask.addr));
+	for (i = 0; local_in_prefix >= 8; local_in_prefix -= 8, ++i) {
+		localaddr->netmask.addr.v6[i] = 0xff;
+	}
+	localaddr->netmask.addr.v6[i] = ~0 << (4 - local_in_prefix);
 
 	return 0;
 }
@@ -437,20 +446,20 @@ inv_host:
 						fprintf(stderr, "localnet format error");
 						exit(1);
 					}
-					if (num_localnet_addr_v4 >= MAX_LOCALNET) {
+					if (num_localnet_addr >= MAX_LOCALNET) {
 						fprintf(stderr, "# of localnet exceed %d.\n", MAX_LOCALNET);
 						continue;
 					}
-					if (!is_ipv6(localnet_spec)) {
-						if (parse_ipv4_addr(localnet_spec, &localnet_addr_v4[num_localnet_addr_v4]) == 0) {
-							++num_localnet_addr_v4;
+					if (strchr(buff, '.')) {
+						if (parse_ipv4_addr(localnet_spec, &localnet_addr[num_localnet_addr]) == 0) {
+							++num_localnet_addr;
 						} else {
 							fprintf(stderr, "unable to parse ipv4 addr %s.\n", localnet_spec);
 							exit(1);
 						}
 					} else {
-						if (parse_ipv6_addr(localnet_spec, &localnet_addr_v6[num_localnet_addr_v6]) == 0) {
-							++num_localnet_addr_v6;
+						if (parse_ipv6_addr(localnet_spec, &localnet_addr[num_localnet_addr]) == 0) {
+							++num_localnet_addr;
 						} else {
 							fprintf(stderr, "unable to parse ipv6 addr %s.\n", localnet_spec);
 							exit(1);
@@ -507,19 +516,13 @@ int close(int fd) {
 static int is_v4inv6(const struct in6_addr *a) {
 	return !memcmp(a->s6_addr, "\0\0\0\0\0\0\0\0\0\0\xff\xff", 12);
 }
-inline static int is_addrv6_in_localnet(const struct in6_addr *a, const struct in6_addr *localnet,
-										unsigned short prefix) {
-	int n = 0;
-	for (; prefix >= 32; ++n, prefix -= 32) {
-		if (a->s6_addr32[n] != localnet->s6_addr32[n])
+static inline int
+ipv6_masked_addr_cmp(const struct in6_addr *a1, const struct in6_addr *m, const struct in6_addr *a2)
+{
+	for (int i = 0; i < 16; ++i) {
+		if (!((a1->s6_addr[i] ^ a2->s6_addr[i]) & m->s6_addr[i]))
 			return 0;
 	}
-
-	if (prefix > 0) {
-		unsigned int mask = ~0 << (32 - prefix);
-		return (a->s6_addr32[n] & mask) == (localnet->s6_addr32[n] & mask);
-	}
-
 	return 1;
 }
 int connect(int sock, const struct sockaddr *addr, unsigned int len) {
@@ -547,7 +550,7 @@ int connect(int sock, const struct sockaddr *addr, unsigned int len) {
 	p_addr_in = &((struct sockaddr_in *) addr)->sin_addr;
 	p_addr_in6 = &((struct sockaddr_in6 *) addr)->sin6_addr;
 	port = !v6 ? ntohs(((struct sockaddr_in *) addr)->sin_port)
-		: ntohs(((struct sockaddr_in6 *) addr)->sin6_port);
+			   : ntohs(((struct sockaddr_in6 *) addr)->sin6_port);
 	struct in_addr v4inv6;
 	if(v6 && is_v4inv6(p_addr_in6)) {
 		memcpy(&v4inv6.s_addr, &p_addr_in6->s6_addr[12], 4);
@@ -561,28 +564,25 @@ int connect(int sock, const struct sockaddr *addr, unsigned int len) {
 
 //	PDEBUG("localnet: %s; ", inet_ntop(AF_INET, &in_addr_localnet, str, sizeof(str)));
 //	PDEBUG("netmask: %s; " , inet_ntop(AF_INET, &in_addr_netmask, str, sizeof(str)));
-	PDEBUG("target: %s\n", inet_ntop(v6 ? AF_INET6 : AF_INET, v6 ? (void *)p_addr_in6 : (void *)p_addr_in, str, sizeof(str)));
+	PDEBUG("target: %s\n", inet_ntop(v6 ? AF_INET6 : AF_INET, v6 ? (void*)p_addr_in6 : (void*)p_addr_in, str, sizeof(str)));
 	PDEBUG("port: %d\n", port);
 
 	// check if connect called from proxydns
 	remote_dns_connect = !v6 && (ntohl(p_addr_in->s_addr) >> 24 == remote_dns_subnet);
 
-	if (!v6) {
-		for (i = 0; i < num_localnet_addr_v4 && !remote_dns_connect; i++) {
-			if ((localnet_addr_v4[i].in_addr.s_addr & localnet_addr_v4[i].netmask.s_addr)
-				== (p_addr_in->s_addr & localnet_addr_v4[i].netmask.s_addr)) {
-				if (!localnet_addr_v4[i].port ||
-					localnet_addr_v4[i].port == port) {
+	for (i = 0; i < num_localnet_addr && !remote_dns_connect; i++) {
+		if (!v6 && !localnet_addr[i].ip.is_v6) {
+			if ((localnet_addr[i].ip.addr.v4.as_int & localnet_addr[i].netmask.addr.v4.as_int)
+				== (p_addr_in->s_addr & localnet_addr[i].netmask.addr.v4.as_int)) {
+				if (!localnet_addr[i].port || localnet_addr[i].port == port) {
 					PDEBUG("accessing localnet using true_connect\n");
 					return true_connect(sock, addr, len);
 				}
 			}
-		}
-	} else {
-		for (i = 0; i < num_localnet_addr_v6 && !remote_dns_connect; i++) {
-			if (is_addrv6_in_localnet(p_addr_in6, &localnet_addr_v6[i].in_addr, localnet_addr_v6[i].prefix)) {
-				if (!localnet_addr_v6[i].port ||
-					localnet_addr_v6[i].port == port) {
+		} else if (v6 && localnet_addr[i].ip.is_v6) {
+			for (int j = 0; j < 16; ++j) {
+				if (ipv6_masked_addr_cmp((struct in6_addr *) &localnet_addr[i].ip.addr,
+										 (struct in6_addr *) &localnet_addr[i].netmask, p_addr_in6)) {
 					PDEBUG("accessing localnet using true_connect\n");
 					return true_connect(sock, addr, len);
 				}

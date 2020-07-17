@@ -64,15 +64,10 @@ typedef enum {
 } select_type;
 
 typedef struct {
-	struct in_addr in_addr, netmask;
+	ip_type ip;
+	ip_type netmask;
 	unsigned short port;
-} localaddr_arg_v4;
-
-typedef struct {
-	struct in6_addr in_addr;
-	unsigned short prefix;
-	unsigned short port;
-} localaddr_arg_v6;
+} localaddr_arg;
 
 typedef struct {
 	ip_type ip;
